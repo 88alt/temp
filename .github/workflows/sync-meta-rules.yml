@@ -1,0 +1,33 @@
+name: Sync Meta Rules Dat Branches
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 22 * * *"
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/README.md"
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync meta branch
+        run: |
+          git fetch --no-tags https://github.com/MetaCubeX/meta-rules-dat.git meta:refs/remotes/upstream-meta
+          git push --force origin refs/remotes/upstream-meta:refs/heads/meta
+          echo "✅ meta branch synced successfully"
+
+      - name: Sync release branch
+        run: |
+          git fetch --no-tags https://github.com/MetaCubeX/meta-rules-dat.git release:refs/remotes/upstream-release
+          git push --force origin refs/remotes/upstream-release:refs/heads/release
+          echo "✅ release branch synced successfully"
