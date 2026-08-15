@@ -14,11 +14,20 @@ concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
   cancel-in-progress: true
 
+# ============================================================
+# 🔧 配置区：以后同步新仓库只需要改这里
+# ============================================================
+env:
+  UPSTREAM_URL: "https://github.com/MetaCubeX/meta-rules-dat.git"
+  # 要同步的分支列表，空格分隔，支持 "上游分支:本地分支" 写法
+  # 如果本地分支名和上游一致，直接写分支名即可
+  BRANCHES: "meta release"
+# ============================================================
+
 jobs:
   sync-branches:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v4.2.2
@@ -26,18 +35,22 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Sync Meta & Release Branches
+      - name: Sync Branches
         id: sync
         run: |
-          echo "=== 准备拉取上游特定分支 ==="
-          UPSTREAM_URL="https://github.com/MetaCubeX/meta-rules-dat.git"
+          echo "=== 上游仓库: $UPSTREAM_URL ==="
+          echo "=== 同步分支: $BRANCHES ==="
 
-          git fetch --no-tags "$UPSTREAM_URL" meta:refs/remotes/upstream-meta
-          git fetch --no-tags "$UPSTREAM_URL" release:refs/remotes/upstream-release
+          for entry in $BRANCHES; do
+            UPSTREAM_BRANCH="${entry%%:*}"
+            LOCAL_BRANCH="${entry##*:}"
 
-          echo "=== 准备精准推送至本仓库 ==="
-          git push --force origin refs/remotes/upstream-meta:refs/heads/meta
-          git push --force origin refs/remotes/upstream-release:refs/heads/release
+            echo "--- 拉取 $UPSTREAM_BRANCH ---"
+            git fetch --no-tags "$UPSTREAM_URL" "$UPSTREAM_BRANCH:refs/remotes/upstream-${UPSTREAM_BRANCH}"
+
+            echo "--- 推送至本地分支 $LOCAL_BRANCH ---"
+            git push --force origin "refs/remotes/upstream-${UPSTREAM_BRANCH}:refs/heads/${LOCAL_BRANCH}"
+          done
 
           echo "✅ 所有指定分支同步成功！"
 
@@ -46,12 +59,11 @@ jobs:
         run: |
           echo "## 🚀 分支同步结果报告" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **上游仓库**: $UPSTREAM_URL" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.sync.outcome }}" == "success" ]; then
             echo "- **同步状态**: ✅ 成功" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **同步状态**: ❌ 失败" >> $GITHUB_STEP_SUMMARY
           fi
-
-          echo "- **同步分支**: \`meta\`, \`release\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **同步分支**: \`$BRANCHES\`" >> $GITHUB_STEP_SUMMARY
           echo "- **执行时间**: $(date -u '+%Y-%m-%d %H:%M:%S' -d '+8 hours') (北京时间)" >> $GITHUB_STEP_SUMMARY
