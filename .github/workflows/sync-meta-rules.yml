@@ -10,17 +10,25 @@ on:
     paths-ignore:
       - "**/README.md"
 
+# 注意：schedule 和 push-to-master 的 github.ref 相同，会落进同一个 concurrency group。
+# cancel-in-progress: true 意味着 push 触发会打断正在跑的定时同步。
+# 如果你希望定时任务不被打断，把下面改成 false。
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
   cancel-in-progress: true
 
+permissions:
+  contents: write   # 没有这行，默认 GITHUB_TOKEN 权限不够时 force push 会被拒绝
+
 # ============================================================
 # 🔧 配置区：以后同步新仓库只需要改这里
+# 语法：
+#   "branch"           → 上游分支=本地分支，同名
+#   "upstream:local"    → 上游分支名 ≠ 本地分支名
+# 多个分支用空格分隔
 # ============================================================
 env:
   UPSTREAM_URL: "https://github.com/MetaCubeX/meta-rules-dat.git"
-  # 要同步的分支列表，空格分隔，支持 "上游分支:本地分支" 写法
-  # 如果本地分支名和上游一致，直接写分支名即可
   BRANCHES: "meta release"
 # ============================================================
 
@@ -38,20 +46,52 @@ jobs:
       - name: Sync Branches
         id: sync
         run: |
+          set -uo pipefail   # 不用 -e，要让循环跑完所有分支再统一报错
           echo "=== 上游仓库: $UPSTREAM_URL ==="
           echo "=== 同步分支: $BRANCHES ==="
 
+          RESULTS=()
+          FAILED=0
+
           for entry in $BRANCHES; do
             UPSTREAM_BRANCH="${entry%%:*}"
-            LOCAL_BRANCH="${entry##*:}"
+            if [[ "$entry" == *:* ]]; then
+              LOCAL_BRANCH="${entry##*:}"
+            else
+              LOCAL_BRANCH="$UPSTREAM_BRANCH"
+            fi
 
             echo "--- 拉取 $UPSTREAM_BRANCH ---"
-            git fetch --no-tags "$UPSTREAM_URL" "$UPSTREAM_BRANCH:refs/remotes/upstream-${UPSTREAM_BRANCH}"
+            if ! git fetch --no-tags "$UPSTREAM_URL" "$UPSTREAM_BRANCH:refs/remotes/upstream-${UPSTREAM_BRANCH}"; then
+              RESULTS+=("❌ ${UPSTREAM_BRANCH} → ${LOCAL_BRANCH}: fetch 失败")
+              FAILED=1
+              continue
+            fi
 
             echo "--- 推送至本地分支 $LOCAL_BRANCH ---"
-            git push --force origin "refs/remotes/upstream-${UPSTREAM_BRANCH}:refs/heads/${LOCAL_BRANCH}"
+            if git push --force origin "refs/remotes/upstream-${UPSTREAM_BRANCH}:refs/heads/${LOCAL_BRANCH}"; then
+              SHA=$(git rev-parse "refs/remotes/upstream-${UPSTREAM_BRANCH}")
+              RESULTS+=("✅ ${UPSTREAM_BRANCH} → ${LOCAL_BRANCH}: ${SHA:0:7}")
+            else
+              RESULTS+=("❌ ${UPSTREAM_BRANCH} → ${LOCAL_BRANCH}: push 失败")
+              FAILED=1
+            fi
           done
 
+          # 正确的跨步骤传值写法：写入 GITHUB_OUTPUT，用多行分隔符
+          {
+            echo "results<<BRANCH_RESULTS_EOF"
+            printf '%s\n' "${RESULTS[@]}"
+            echo "BRANCH_RESULTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "=== 同步汇总 ==="
+          printf '%s\n' "${RESULTS[@]}"
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "⚠️ 部分分支同步失败"
+            exit 1
+          fi
           echo "✅ 所有指定分支同步成功！"
 
       - name: Generate Summary Report
@@ -66,4 +106,10 @@ jobs:
             echo "- **同步状态**: ❌ 失败" >> $GITHUB_STEP_SUMMARY
           fi
           echo "- **同步分支**: \`$BRANCHES\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 各分支明细" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.sync.outputs.results }}' | while IFS= read -r line; do
+            [ -n "$line" ] && echo "- $line" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **执行时间**: $(date -u '+%Y-%m-%d %H:%M:%S' -d '+8 hours') (北京时间)" >> $GITHUB_STEP_SUMMARY
